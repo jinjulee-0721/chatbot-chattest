@@ -1,56 +1,146 @@
 import streamlit as st
 from openai import OpenAI
+import os
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
+
+st.set_page_config(page_title="야식 챗봇", page_icon="🍜")
+
+st.title("🍜 야식 챗봇 — 밤에 뭐 먹을까?")
+
+# Default system prompt (used as placeholder and reset value)
+SYSTEM_PROMPT = (
+    "You are a friendly late-night snack recommender named '야식 챗봇'. "
+    "When the user asks, suggest 3 tailored late-night options and ask at least one clarifying question "
+    "(dietary restrictions, spice tolerance, time, budget, or available cooking equipment). "
+    "Be concise, give short bullet suggestions and follow up to continue the conversation. "
+    "If the user asks for a single recommendation, explain why it's a good choice."
 )
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+# System prompt editor placed immediately below the title
+if "system_prompt" not in st.session_state:
+    st.session_state.system_prompt = SYSTEM_PROMPT
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+st.markdown("**시스템 프롬프트 (챗봇 동작 방식)**")
+prompt_text = st.text_area(
+    label="시스템 프롬프트 편집",
+    value="",
+    placeholder=st.session_state.system_prompt,
+    height=180,
+)
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+col_apply, col_reset = st.columns([1, 1])
+with col_apply:
+    if st.button("적용"):
+        if prompt_text and prompt_text.strip():
+            st.session_state.system_prompt = prompt_text.strip()
+            # update system message in conversation if present
+            if "messages" in st.session_state and len(st.session_state.messages) > 0 and st.session_state.messages[0].get("role") == "system":
+                st.session_state.messages[0]["content"] = st.session_state.system_prompt
+            else:
+                st.session_state.messages = [{"role": "system", "content": st.session_state.system_prompt}]
+            st.success("시스템 프롬프트가 적용되었습니다.")
+with col_reset:
+    if st.button("기본값으로 복원"):
+        st.session_state.system_prompt = SYSTEM_PROMPT
+        if "messages" in st.session_state and len(st.session_state.messages) > 0 and st.session_state.messages[0].get("role") == "system":
+            st.session_state.messages[0]["content"] = st.session_state.system_prompt
+        else:
+            st.session_state.messages = [{"role": "system", "content": st.session_state.system_prompt}]
+        st.success("시스템 프롬프트가 기본값으로 복원되었습니다.")
 
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+st.write("야식 추천과 대화를 이어가며 사용자의 상황에 맞는 메뉴를 제안해주는 챗봇입니다.")
 
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
 
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
+# Load API key from Streamlit secrets (no user input required)
+api_key = None
+if isinstance(st.secrets, dict) and "OPENAI_API_KEY" in st.secrets:
+    api_key = st.secrets.get("OPENAI_API_KEY")
+if not api_key:
+    api_key = os.environ.get("OPENAI_API_KEY")
+
+if not api_key:
+    st.error("OpenAI API 키가 설정되어 있지 않습니다. `.streamlit/secrets.toml`에 `OPENAI_API_KEY`를 추가하세요.")
+    st.stop()
+
+# Initialize OpenAI client
+client = OpenAI(api_key=api_key)
+
+
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "system", "content": st.session_state.system_prompt}
+    ]
+
+
+def format_message_display(role, content):
+    if role == "user":
         with st.chat_message("user"):
-            st.markdown(prompt)
-
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
-        )
-
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
+            st.markdown(content)
+    elif role == "assistant":
         with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+            st.markdown(content)
+    else:
+        st.write(content)
+
+
+# Display previous messages
+for m in st.session_state.messages:
+    # skip system from rendering
+    if m["role"] == "system":
+        continue
+    format_message_display(m["role"], m["content"])
+
+
+col1, col2 = st.columns([1, 4])
+with col1:
+    if st.button("초기화"):  # clear chat
+        st.session_state.messages = [{"role": "system", "content": st.session_state.get("system_prompt", SYSTEM_PROMPT)}]
+        # Streamlit will rerun automatically on interaction; no explicit rerun needed.
+        pass
+with col2:
+    st.caption("예시: '매운 거 먹고싶어', '다이어트 중인데 가벼운 야식 추천해줘', '집에 치즈랑 라면 있어' 등")
+
+
+user_input = st.chat_input("원하시는 야식이나 상황을 적어보세요...")
+if user_input:
+    # Append user message
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    format_message_display("user", user_input)
+
+    # Prepare messages for API
+    api_messages = [
+        {"role": m["role"], "content": m["content"]}
+        for m in st.session_state.messages
+    ]
+
+    # Call OpenAI Chat Completions with gpt-4o-mini
+    with st.spinner("추천을 불러오는 중... 잠시만 기다려 주세요."):
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=api_messages,
+                temperature=0.7,
+                max_tokens=500,
+            )
+
+            # Extract assistant text robustly
+            assistant_text = ""
+            try:
+                assistant_text = resp.choices[0].message.content
+            except Exception:
+                try:
+                    assistant_text = resp.choices[0]["message"]["content"]
+                except Exception:
+                    assistant_text = str(resp)
+
+        except Exception as e:
+            st.error(f"API 요청 중 오류가 발생했습니다: {e}")
+            assistant_text = "죄송합니다. 응답을 불러오지 못했습니다. 나중에 다시 시도해주세요."
+
+    # Append and display assistant reply
+    st.session_state.messages.append({"role": "assistant", "content": assistant_text})
+    format_message_display("assistant", assistant_text)
+
+    # Scroll to bottom by rerunning (Streamlit retains messages)
+    # No explicit rerun required; Streamlit will refresh after user interaction.
+    pass
